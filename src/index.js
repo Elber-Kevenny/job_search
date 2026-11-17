@@ -1,20 +1,15 @@
-
-import express from 'express';
-import { router } from './routes/articleRouter.js';
+import express from "express";
+import { router } from "./routes/articleRouter.js";
 
 const app = express();
 
 const PORT = 3000;
 
 app.use(express.json());
-app.use(router)
+app.use(router);
 app.listen(PORT, () => {
-  console.log(`server running http://localhost:${PORT}`)
-})
-
-
-
-
+  console.log(`server running http://localhost:${PORT}`);
+});
 
 // console.log(await getHtml('Should'))
 
@@ -48,6 +43,4 @@ app.listen(PORT, () => {
 //   }
 // };
 
-
-
-// 
+//
