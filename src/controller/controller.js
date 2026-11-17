@@ -29,6 +29,10 @@ const URLS = [
     url: "http://portal.gupy.io/job-search/term=",
     name: "gupy",
   },
+  {
+    url: "https://www.devvagas.com.br/vagas/",
+    name: "devvagas",
+  },
 ];
 
 const termosProibidos = [
@@ -119,6 +123,7 @@ export const getHtml = async (request, response) => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const result = await page.evaluate((siteName) => {
       let linkElement;
+      let TitleAndDescription;
       switch (siteName) {
         case "indeed":
           linkElement = Array.from(document.querySelectorAll("h3 a span"));
@@ -136,7 +141,7 @@ export const getHtml = async (request, response) => {
 
         case "empregos.com":
           linkElement = Array.from(
-            document.querySelectorAll("div:has(> h2 > a)"),
+            document.querySelectorAll("div a[role='button']"),
           );
           break;
 
@@ -147,10 +152,30 @@ export const getHtml = async (request, response) => {
         case "gupy":
           linkElement = Array.from(document.querySelectorAll("h3 a"));
           break;
+        case "devvagas":
+          linkElement = Array.from(document.querySelectorAll("h3 a"));
+          break;
       }
 
+      // if (siteName === "empregos.com") {
+      //   return TitleAndDescription.map((link) => {
+      //     return {
+      //       title: link.textContent.trim(),
+      //     };
+      //   });
+      // }
+
       return linkElement.map((link) => {
-        const anchor = link.tagName === "A" ? link : link.closest("a");
+        if(siteName === "empregos.com" ) {
+          const anchor = link.tagName === "A" ? link : link.closest("a");
+          const titles = Array.from(document.querySelectorAll("h2.max-w-96 > span"))
+          for(const title of titles) {
+            return {
+              title: title.textContent.trim(),
+              url: anchor ? anchor.href : null,
+            }
+          }
+        }
         return {
           title: link.textContent.trim(),
           url: anchor ? anchor.href : null,
@@ -195,7 +220,7 @@ export const getHtml = async (request, response) => {
             waitUntil: "domcontentloaded",
             timeout: 65000,
           });
-          await new Promise((resolve) => setTimeout(resolve, 6000));
+          await new Promise((resolve) => setTimeout(resolve, 2000));
           await page.keyboard.press("Escape");
           if (pegarVagas.name === "glassdoor") {
             await new Promise((resolve) => setTimeout(resolve, 8000));
@@ -321,8 +346,13 @@ export const getHtml = async (request, response) => {
                 break;
 
               case "empregos.com":
-                container = document.querySelector("div p");
-                break;
+                const h3List = Array.from(document.querySelectorAll("div.bg-white > h3"));
+                const descH3 = h3List.find(h => h.textContent.includes("Descrição da vaga"));
+                if (descH3) {
+                  container = descH3.nextElementSibling || descH3.parentElement.querySelector("div[class*='break-words']");
+                } else {
+                  container = document.querySelector('div[class*="break-words"]') || document.querySelector("main");
+                }
 
               case "solides":
                 container = document.querySelector("span p");
