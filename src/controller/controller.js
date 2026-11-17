@@ -105,7 +105,6 @@ export const getHtml = async (request, response) => {
 
     let result = [];
 
-    // Lógica de paginação por loop para o Indeed (até 4 páginas: start = 0, 20, 40, 60)
     if (pegarVagas.name === "indeed") {
       const maxPages = 4;
       for (let i = 0; i < maxPages; i++) {
@@ -166,8 +165,56 @@ export const getHtml = async (request, response) => {
       }, pegarVagas.name);
 
       result.push(...pageResult);
-    } else {
-      // Demais sites (comportamento padrão de página única ou query normal)
+    } else if (pegarVagas.name === "devvagas") {
+      let URL = pegarVagas.url + encodeURIComponent(keyWord);
+      console.log(`📄 Acessando Devvagas: ${URL}`);
+
+      await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
+      await page.keyboard.press("Escape");
+
+      const maxScrolls = 8; 
+      for (let i = 0; i < maxScrolls; i++) {
+        console.log(`⬇️ Rolando para carregar mais dados (${i + 1}/${maxScrolls})...`);
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
+
+      result = await page.evaluate(() => {
+        const vagasMap = new Map();
+
+        const scripts = Array.from(document.querySelectorAll("script"));
+        for (const script of scripts) {
+          const content = script.textContent || "";
+          if (content.includes("self.__next_f") || content.includes("https://www.devvagas.com.br/jobs/")) {
+            const regex = /"url"\s*:\s*"(https:\/\/www\.devvagas\.com\.br\/jobs\/[^"]+)"[^}]*?"name"\s*:\s*"([^"]+)"/g;
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+              const jobUrl = match.exec ? match[1] : match[1];
+              const jobTitle = match[2]
+                .replace(/\\u0026/g, "&")
+                .replace(/\\u002F/g, "/")
+                .trim();
+              
+              if (jobUrl && jobTitle) {
+                vagasMap.set(jobUrl, { title: jobTitle, url: jobUrl });
+              }
+            }
+          }
+        }
+
+        // 2. Fallback caso apanhe algum link solto no DOM padrão
+        const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/"]'));
+        for (const a of anchors) {
+          if (a.href && a.textContent.trim().length > 3) {
+            vagasMap.set(a.href, { title: a.textContent.trim(), url: a.href });
+          }
+        }
+
+        return Array.from(vagasMap.values());
+      });
+    }
+    
+    else {
       let query;
       if (name.toLowerCase() === "glassdoor") {
         query =
@@ -192,74 +239,68 @@ export const getHtml = async (request, response) => {
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       result = await page.evaluate((siteName) => {
-        let linkElement;
-        switch (siteName) {
-          case "jooble":
-            linkElement = Array.from(document.querySelectorAll("h2 a"));
-            break;
-          case "glassdoor":
-            linkElement = Array.from(
-              document.querySelectorAll("a[data-test=job-title]"),
-            );
-            break;
-          case "empregos.com":
-            linkElement = Array.from(
-              document.querySelectorAll("div a[role='button']"),
-            );
-            break;
-          case "solides":
-            linkElement = Array.from(document.querySelectorAll("h2 a"));
-            break;
-          case "gupy":
-          case "devvagas":
-            linkElement = Array.from(document.querySelectorAll("h3 a"));
-            break;
-          default:
-            linkElement = [];
-        }
+      let linkElement;
+      let jobList = [];
+      switch (siteName) {
+        case "jooble":
+          linkElement = Array.from(document.querySelectorAll("h2 a"));
+          break;
+        case "glassdoor":
+          linkElement = Array.from(
+            document.querySelectorAll("a[data-test=job-title]"),
+          );
+          break;
+        case "empregos.com":
+          linkElement = Array.from(
+            document.querySelectorAll("div a[role='button']"),
+          );
+          break;
+        case "solides":
+          linkElement = Array.from(document.querySelectorAll("h2 a"));
+          break;
+        case "gupy":
+          linkElement = Array.from(document.querySelectorAll("h3 a"));
+          break;
 
-        return linkElement.map((link) => {
-          if (siteName === "empregos.com") {
-            const anchor = link.tagName === "A" ? link : link.closest("a");
-            const titles = Array.from(
-              document.querySelectorAll("h2.max-w-96 > span"),
-            );
-            for (const title of titles) {
-              return {
-                title: title.textContent.trim(),
-                url: anchor ? anchor.href : null,
-              };
-            }
-          }
+        default:
+          linkElement = [];
+          break;
+      }
+
+      return linkElement.map((link) => {
+        if (siteName === "empregos.com") {
           const anchor = link.tagName === "A" ? link : link.closest("a");
-          return {
-            title: link.textContent.trim(),
-            url: anchor ? anchor.href : null,
-          };
-        });
-      }, pegarVagas.name);
+          const titles = Array.from(
+            document.querySelectorAll("h2.max-w-96 > span"),
+          );
+          for (const title of titles) {
+            return {
+              title: title.textContent.trim(),
+              url: anchor ? anchor.href : null,
+            };
+          }
+        }
+        const anchor = link.tagName === "A" ? link : link.closest("a");
+        return {
+          title: link.textContent.trim(),
+          url: anchor ? anchor.href : null,
+        };
+      });
+    }, pegarVagas.name);
     }
 
     console.log(`--- VAGAS CAPTURADAS NO TOTAL (RAW): ${result.length} ---`);
-
+    console.log(`--- VAGAS CAPTURADAS : ${result} ---`);
+    console.log(`--- VAGAS CAPTURADAS : ${JSON.stringify(result, null, 2)} ---`);
     const escapeRegex = (string) =>
       string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    const normalizedKey = keyWord.trim().toLowerCase().split(" ");
 
-    // 1. Filtragem por Palavra-Chave E Termos Proibidos no Título
-    for (const vaga of result) {
+   for (const vaga of result) {
       if (!vaga.title || !vaga.url) continue;
       const normalizedTitle = vaga.title.toLowerCase();
 
-      // Verifica se contém a palavra-chave buscada
-      const contemKeyword = normalizedKey.some((termo) =>
-        normalizedTitle.includes(termo),
-      );
-
-      if (!contemKeyword) continue;
-
-      // Verifica se o título possui algum termo proibido
+      let termoEncontrado = null;
       const tituloTemTermoProibido = termosProibidos.some((termo) => {
         const termoEscapado = escapeRegex(termo);
         const possuiEspeciais = /[^a-zA-Z0-9\s]/.test(termo);
@@ -267,13 +308,21 @@ export const getHtml = async (request, response) => {
           ? termoEscapado
           : `\\b${termoEscapado}\\b`;
         const regex = new RegExp(pattern, "i");
-        return regex.test(normalizedTitle);
+        if (regex.test(normalizedTitle)) {
+          termoEncontrado = termo;
+          return true;
+        }
+        return false;
       });
 
-      // Se passou nos critérios do título, adiciona para a lista de verificadas por título
-      if (!tituloTemTermoProibido) {
-        vagasEncontradas.push(vaga);
+      if (tituloTemTermoProibido) {
+        console.log(`🚫 Rejeitada pelo Título (termo proibido "${termoEncontrado}"): "${vaga.title}"`);
+        continue;
       }
+
+      // Passou no filtro de título (o filtro pesado de tecnologia/stack será feito na descrição)
+      console.log(`✅ Aprovada no título: "${vaga.title}"`);
+      vagasEncontradas.push(vaga);
     }
 
     console.log(
@@ -286,7 +335,6 @@ export const getHtml = async (request, response) => {
       await browser.close();
       return response.status(404).send({ message: "not found" });
     } else {
-      // 2. Verificação detalhada por Descrição
       for (const vaga of vagasEncontradas) {
         const pageFiltered = await browser.newPage();
         try {
@@ -402,6 +450,12 @@ export const getHtml = async (request, response) => {
                 container = document.querySelector("div li span");
                 break;
 
+                case "devvagas":
+                  container = document.querySelector("div.prose:has(h2)");
+                break;
+
+
+
               default:
                 container = document.querySelector(
                   "div[data-test-name='_jobDescriptionBlock']",
@@ -463,120 +517,3 @@ export const getHtml = async (request, response) => {
     }
   }
 };
-// export const getCorrespondecia = async (request, response) => {
-//   const vagasEncontradas = [];
-//   const { keyWord, name } = request.body;
-//   let browser;
-//   if (!keyWord) {
-//     return response.status(400).send({ message: "keyword vazia" });
-//   }
-//   if (!name) {
-//     return response.status(400).send({ message: "name vazio" });
-//   }
-//   const query = encodeURIComponent(keyWord);
-//   const pegarVagas = URLS.find((site) => site.name === name.toLowerCase());
-//   if (!pegarVagas) {
-//     return response
-//       .status(400)
-//       .send({ message: "site informado não é suportado" });
-//   }
-//   const URL = pegarVagas.url + query;
-
-//   try {
-//     browser = await puppeteer.launch({
-//       headless: false,
-//       args: [
-//         "--no-sandbox",
-//         "--disable-setuid-sandbox",
-//         "--disable-blink-features=AutomationControlled",
-//       ],
-//     });
-
-//     const page = await browser.newPage();
-//     await page.setViewport({ width: 1366, height: 768 });
-
-//     await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
-//     await page.keyboard.press("Escape");
-//     await page.evaluate(() => {
-//       const overlays = document.querySelectorAll(
-//         '[role="dialog"], div[class*="modal"], div[class*="overlay"]',
-//       );
-//       overlays.forEach((el) => el.remove());
-//     });
-//     await new Promise((resolve) => setTimeout(resolve, 1000));
-//     const result = await page.evaluate((siteName) => {
-//       let linkElement;
-//       switch (siteName) {
-//         case "indeed":
-//           linkElement = Array.from(document.querySelectorAll("h3 a span"));
-//           break;
-
-//         case "jooble":
-//           linkElement = Array.from(document.querySelectorAll("h2 a"));
-//           break;
-
-//         case "glassdoor":
-//           linkElement = Array.from(
-//             document.querySelectorAll("a[data-test=job-title]"),
-//           );
-//           break;
-
-//         case "empregos.com":
-//           linkElement = Array.from(document.querySelectorAll("h2 a"));
-//           break;
-
-//         case "solides":
-//           linkElement = Array.from(document.querySelectorAll("h2 a"));
-//           break;
-
-//         case "gupy":
-//           linkElement = Array.from(document.querySelectorAll("h3 a"));
-//           break;
-//       }
-
-//       return linkElement.map((link) => {
-//         const anchor = link.tagName === "A" ? link : link.closest("a");
-//         return {
-//           title: link.textContent.trim(),
-//           url: anchor ? anchor.href : null,
-//         };
-//       });
-//     }, pegarVagas.name);
-
-//     console.log(`--- VAGAS CAPTURADAS NO TOTAL: ${result.length} ---`);
-//     console.log(result.slice(0, 5)); // Mostra as 5 primeiras vagas no console
-
-//     const normalizedKey = keyWord.trim().toLowerCase().split(" ");
-//     // desenvolvedor fullstack vaga remota
-
-//     for (const vaga of result) {
-//       if (!vaga.title || !vaga.url) continue;
-//       const normalizedTitle = vaga.title.toLowerCase();
-//       const encontrou = normalizedKey.some((termo) =>
-//         normalizedTitle.includes(termo),
-//       );
-//       if (encontrou) {
-//         vagasEncontradas.push(vaga);
-//       }
-//     }
-//     await browser.close();
-
-//     if (vagasEncontradas.length === 0) {
-//       console.log("❌ Nenhuma vaga correspondeu à palavra-chave exata.");
-//       return response.status(404).send({ message: "not found" });
-//     } else {
-//       return response.status(200).send(vagasEncontradas);
-//     }
-//   } catch (e) {
-//     console.error("Erro ao executar a API", e.message);
-//     if (browser) {
-//       await browser.close();
-//     }
-
-//     if (!response.headersSent) {
-//       return response
-//         .status(500)
-//         .send({ message: "erro interno no scraper", details: e.message });
-//     }
-//   }
-// };
