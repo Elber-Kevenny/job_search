@@ -34,13 +34,14 @@ const URLS = [
   },
   {
     url: "https://remotar.com.br/search/jobs?q=",
-    name: "Remotar",
+    name: "remotar",
   },
 ];
 
 const termosProibidos = [
   // Modalidade e Senioridade
   "presencial",
+  "Presencial",
   "híbrido",
   "hibrido",
   "estágio",
@@ -49,7 +50,9 @@ const termosProibidos = [
   "senior",
   "lead",
   "pj",
+  "sr",
   "vaga afirmativa",
+  "pcd",
 
   // Tecnologias adicionadas previamente
   "c++",
@@ -68,6 +71,8 @@ const termosProibidos = [
   "c#",
   "python",
   "phyton",
+  "delphi",
+  "elixir",
 ];
 
 export const getHtml = async (request, response) => {
@@ -106,13 +111,72 @@ export const getHtml = async (request, response) => {
     let result = [];
 
     if (pegarVagas.name === "indeed") {
-      const maxPages = 4;
+      const maxPages = 3; // manter o maximo de 3 páginas ou 50 vagas
       for (let i = 0; i < maxPages; i++) {
-        const startValue = i * 20;
-        const query = encodeURIComponent(keyWord) + `&start=${startValue}`;
+        const startValue = i * 10;
+
+        const query =
+          encodeURIComponent(keyWord) + `&l=Brasil&start=${startValue}`;
         const URL = pegarVagas.url + query;
 
         console.log(`📄 Acessando Indeed (Página ${i + 1}): ${URL}`);
+        await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
+        await page.keyboard.press("Escape");
+
+        await page.evaluate(() => {
+          const overlays = document.querySelectorAll(
+            '[role="dialog"], div[class*="modal"], div[class*="overlay"]',
+          );
+          overlays.forEach((el) => el.remove());
+        });
+
+        try {
+          await page.waitForSelector("td.resultContent, div.job_seen_beacon", {
+            timeout: 7000,
+          });
+        } catch (err) {
+          console.log(
+            "ℹ️ Cards do Indeed demoraram a aparecer ou a página exigiu verificação.",
+          );
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        const pageResult = await page.evaluate(() => {
+          let linkElement = Array.from(
+            document.querySelectorAll(
+              "h3.jobTitle a, a.jcs-JobTitle, td.resultContent h2 a",
+            ),
+          );
+
+          return linkElement.map((link) => {
+            const anchor = link.tagName === "A" ? link : link.closest("a");
+            return {
+              title: link.textContent.trim(),
+              url: anchor ? anchor.href : null,
+            };
+          });
+        });
+
+        console.log(
+          `✨ Encontradas ${pageResult.length} vagas brutas na página ${i + 1}`,
+        );
+        result.push(...pageResult);
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    } else if (pegarVagas.name === "empregos.com") {
+      const maxPages = 36;
+      for (let i = 0; i < maxPages; i++) {
+        const startValue = i;
+        let query = encodeURIComponent(keyWord);
+        if (startValue === 0) {
+          query = encodeURIComponent(keyWord);
+        }
+        query = encodeURIComponent(keyWord) + `&page=${startValue}`;
+        const URL = pegarVagas.url + query;
+
+        console.log(`📄 Acessando Empregos.com (Página ${i}): ${URL}`);
         await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
         await page.keyboard.press("Escape");
         await page.evaluate(() => {
@@ -121,15 +185,30 @@ export const getHtml = async (request, response) => {
           );
           overlays.forEach((el) => el.remove());
         });
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 3000));
 
         const pageResult = await page.evaluate((siteName) => {
-          let linkElement = Array.from(document.querySelectorAll("h3 a span"));
+          let linkElement = Array.from(
+            document.querySelectorAll("div a[role='button']"),
+          );
           return linkElement.map((link) => {
+            const card = link.closest("#job-card");
+            const titleEl = document.querySelector("h2 > span");
+            const modalidade = card
+              ? card.querySelector(
+                  "div.flex:has(img[alt='Ícone de pessoa']):has(span)",
+                )
+              : null;
             const anchor = link.tagName === "A" ? link : link.closest("a");
+
             return {
-              title: link.textContent.trim(),
+              title: titleEl
+                ? titleEl.textContent.trim()
+                : link.textContent.trim(),
               url: anchor ? anchor.href : null,
+              modalidadeEmpregosCom: modalidade
+                ? modalidade.textContent.trim()
+                : "",
             };
           });
         }, pegarVagas.name);
@@ -137,21 +216,89 @@ export const getHtml = async (request, response) => {
         result.push(...pageResult);
       }
     } else if (pegarVagas.name === "jooble") {
-      const maxPages = 20; // Se quiser ir até 20, basta alterar aqui para 20
-
+      const maxPages = 20;
       const query = encodeURIComponent(keyWord) + `&p=${maxPages}`;
       const URL = pegarVagas.url + query;
 
-      console.log(`📄 Acessando Jooble (Página ${10}): ${URL}`);
+      console.log(`📄 Acessando Jooble: ${URL}`);
       await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
       await page.keyboard.press("Escape");
+
       await page.evaluate(() => {
         const overlays = document.querySelectorAll(
           '[role="dialog"], div[class*="modal"], div[class*="overlay"]',
         );
         overlays.forEach((el) => el.remove());
       });
-      await new Promise((resolve) => setTimeout(resolve, 10000));
+
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+
+      let tentativasCaptcha = 0;
+      const maxTentativas = 3;
+
+      while (tentativasCaptcha < maxTentativas) {
+        const turnstileFrame = page
+          .frames()
+          .find(
+            (frame) =>
+              frame.url().includes("challenges.cloudflare.com") ||
+              frame.url().includes("turnstile"),
+          );
+
+        if (!turnstileFrame) {
+          console.log("✨ Nenhum desafio de Cloudflare ativo no momento.");
+          break;
+        }
+
+        tentativasCaptcha++;
+        console.log(
+          `⚠️ Desafio de CAPTCHA detectado (Tentativa ${tentativasCaptcha}/${maxTentativas})...`,
+        );
+
+        try {
+          const selector =
+            'input[aria-label*="Verify"], input[type="checkbox"], label, span[aria-hidden="true"], body';
+          const checkboxElement = await turnstileFrame.waitForSelector(
+            selector,
+            {
+              timeout: 6000,
+              visible: true,
+            },
+          );
+
+          if (checkboxElement) {
+            const box = await checkboxElement.boundingBox();
+            if (box) {
+              await page.mouse.move(100, 100);
+              await new Promise((resolve) => setTimeout(resolve, 300));
+
+              await page.mouse.move(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+                { steps: 10 },
+              );
+
+              await new Promise((resolve) => setTimeout(resolve, 400));
+              await page.mouse.down();
+              await new Promise((resolve) => setTimeout(resolve, 200));
+              await page.mouse.up();
+
+              console.log(
+                "✅ Clique físico disparado. Aguardando validação do Cloudflare...",
+              );
+            } else {
+              await checkboxElement.click();
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 12000));
+          }
+        } catch (err) {
+          console.log("ℹ️ Elemento do CAPTCHA sumiu ou já foi resolvido.");
+          break;
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       const pageResult = await page.evaluate((siteName) => {
         let linkElement = Array.from(document.querySelectorAll("h2 a"));
@@ -247,26 +394,17 @@ export const getHtml = async (request, response) => {
 
       result = await page.evaluate((siteName) => {
         let linkElement;
-        let jobList = [];
+
         switch (siteName) {
-          case "jooble":
-            linkElement = Array.from(document.querySelectorAll("h2 a"));
-            break;
-          case "glassdoor":
-            linkElement = Array.from(
-              document.querySelectorAll("a[data-test=job-title]"),
-            );
-            break;
-          case "empregos.com":
-            linkElement = Array.from(
-              document.querySelectorAll("div a[role='button']"),
-            );
-            break;
           case "solides":
             linkElement = Array.from(document.querySelectorAll("h2 a"));
             break;
           case "gupy":
             linkElement = Array.from(document.querySelectorAll("h3 a"));
+            break;
+
+          case "remotar":
+            linkElement = Array.from(document.querySelectorAll("a.job-title"));
             break;
 
           default:
@@ -275,19 +413,15 @@ export const getHtml = async (request, response) => {
         }
 
         return linkElement.map((link) => {
-          if (siteName === "empregos.com") {
-            const anchor = link.tagName === "A" ? link : link.closest("a");
-            const titles = Array.from(
-              document.querySelectorAll("h2.max-w-96 > span"),
-            );
-            for (const title of titles) {
-              return {
-                title: title.textContent.trim(),
-                url: anchor ? anchor.href : null,
-              };
-            }
-          }
           const anchor = link.tagName === "A" ? link : link.closest("a");
+          if (siteName.name === "remotar") {
+            const card =
+              link.closest("div.card-header__info") || link.parentElement;
+            return {
+              title: link.textContent.trim(),
+              url: link.href,
+            };
+          }
           return {
             title: link.textContent.trim(),
             url: anchor ? anchor.href : null,
@@ -296,8 +430,69 @@ export const getHtml = async (request, response) => {
       }, pegarVagas.name);
     }
 
+    if (pegarVagas.name === "glassdoor") {
+      console.log(`📄 Acessando Glassdoor`);
+
+      await page.keyboard.press("Escape");
+
+      await page.evaluate(() => {
+        const overlays = document.querySelectorAll(
+          '[role="dialog"], div[class*="modal"], div[class*="overlay"]',
+        );
+        overlays.forEach((el) => el.remove());
+      });
+
+      const maxCliques = 5;
+      let cliquesRealizados = 0;
+
+      while (cliquesRealizados < maxCliques) {
+        try {
+          const loadMoreButton = await page.$(
+            'button[data-test="load-more"], button[id*="loadMore"], [class*="load-more"]',
+          );
+
+          if (!loadMoreButton) {
+            console.log(
+              "ℹ️ Botão 'Carregar mais' não exibido (ou todas as vagas já estão visíveis). Prosseguindo...",
+            );
+            break;
+          }
+
+          await loadMoreButton.evaluate((btn) =>
+            btn.scrollIntoView({ behavior: "smooth", block: "center" }),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+
+          await loadMoreButton.click();
+          cliquesRealizados++;
+          console.log(
+            `🔄 Clicou em 'Carregar mais' (${cliquesRealizados}/${maxCliques})...`,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        } catch (err) {
+          console.log("ℹ️ Fim do ciclo de carregamento de mais vagas.");
+          break;
+        }
+      }
+
+      const pageResult = await page.evaluate(() => {
+        let linkElement = Array.from(
+          document.querySelectorAll("a[data-test='job-title']"),
+        );
+        return linkElement.map((link) => {
+          const anchor = link.tagName === "A" ? link : link.closest("a");
+          return {
+            title: link.textContent.trim(),
+            url: anchor ? anchor.href : null,
+          };
+        });
+      });
+
+      result.push(...pageResult);
+    }
+
     console.log(`--- VAGAS CAPTURADAS NO TOTAL (RAW): ${result.length} ---`);
-    console.log(`--- VAGAS CAPTURADAS : ${result} ---`);
     console.log(
       `--- VAGAS CAPTURADAS : ${JSON.stringify(result, null, 2)} ---`,
     );
@@ -307,6 +502,9 @@ export const getHtml = async (request, response) => {
     for (const vaga of result) {
       if (!vaga.title || !vaga.url) continue;
       const normalizedTitle = vaga.title.toLowerCase();
+      const normalizedModalidadeEmpregos = (
+        vaga.modalidadeEmpregosCom || ""
+      ).toLowerCase();
 
       let termoEncontrado = null;
       const tituloTemTermoProibido = termosProibidos.some((termo) => {
@@ -316,7 +514,12 @@ export const getHtml = async (request, response) => {
           ? termoEscapado
           : `\\b${termoEscapado}\\b`;
         const regex = new RegExp(pattern, "i");
+        const regexModalidade = new RegExp(termoEscapado, "i");
         if (regex.test(normalizedTitle)) {
+          termoEncontrado = termo;
+          return true;
+        }
+        if (regexModalidade.test(normalizedModalidadeEmpregos)) {
           termoEncontrado = termo;
           return true;
         }
@@ -325,7 +528,7 @@ export const getHtml = async (request, response) => {
 
       if (tituloTemTermoProibido) {
         console.log(
-          `🚫 Rejeitada pelo Título (termo proibido "${termoEncontrado}"): "${vaga.title}"`,
+          `🚫 Rejeitada pelo Título ou pela modalidade (termo proibido "${termoEncontrado}"): "${vaga.title}`,
         );
         continue;
       }
@@ -357,6 +560,8 @@ export const getHtml = async (request, response) => {
 
           if (pegarVagas.name === "glassdoor") {
             await new Promise((resolve) => setTimeout(resolve, 8000));
+            let tentativasCaptcha = 0;
+            const maxTentativas = 3;
             const turnstileFrame = pageFiltered
               .frames()
               .find(
@@ -365,7 +570,15 @@ export const getHtml = async (request, response) => {
                   frame.url().includes("turnstile"),
               );
 
+            if (!turnstileFrame) {
+              console.log(
+                "✨ Nenhum desafio de Cloudflare ativo no Glassdoor.",
+              );
+              break;
+            }
+
             if (turnstileFrame) {
+              tentativasCaptcha++;
               console.log(
                 "⚠️ Desafio de CAPTCHA/Cloudflare detectado! Tentando resolver...",
               );
@@ -375,7 +588,7 @@ export const getHtml = async (request, response) => {
                 const checkboxElement = await turnstileFrame.waitForSelector(
                   selector,
                   {
-                    timeout: 5000,
+                    timeout: 6000,
                     visible: true,
                   },
                 );
@@ -386,7 +599,9 @@ export const getHtml = async (request, response) => {
                     await pageFiltered.mouse.move(
                       box.x + box.width / 2,
                       box.y + box.height / 2,
+                      { steps: 8 },
                     );
+                    await new Promise((resolve) => setTimeout(resolve, 400));
                     await pageFiltered.mouse.down();
                     await new Promise((resolve) => setTimeout(resolve, 150));
                     await pageFiltered.mouse.up();
@@ -402,6 +617,7 @@ export const getHtml = async (request, response) => {
                 console.log(
                   "ℹ️ Checkbox não clicável ou o desafio resolveu sozinho.",
                 );
+                break;
               }
             }
           }
@@ -461,6 +677,10 @@ export const getHtml = async (request, response) => {
 
               case "devvagas":
                 container = document.querySelector("div.prose:has(h2)");
+                break;
+
+              case "remotar":
+                container = document.querySelector("div.job-information");
                 break;
 
               default:
