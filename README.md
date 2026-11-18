@@ -1,6 +1,3 @@
-Aqui está um **README breve, direto e profissional** para documentar a sua API de scraping de vagas:
-
----
 
 # 🚀 Job Scraper API (Node.js + Puppeteer)
 
