@@ -36,6 +36,10 @@ const URLS = [
     url: "https://remotar.com.br/search/jobs?q=",
     name: "remotar",
   },
+  {
+    url: "https://www2.infojobs.com.br/vagas.aspx?palabra=",
+    name: "infojobs",
+  },
 ];
 
 const termosProibidos = [
@@ -216,7 +220,7 @@ export const getHtml = async (request, response) => {
         result.push(...pageResult);
       }
     } else if (pegarVagas.name === "jooble") {
-      const maxPages = 20;
+      const maxPages = 5;
       const query = encodeURIComponent(keyWord) + `&p=${maxPages}`;
       const URL = pegarVagas.url + query;
 
@@ -290,7 +294,7 @@ export const getHtml = async (request, response) => {
               await checkboxElement.click();
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 12000));
+            await new Promise((resolve) => setTimeout(resolve, 15000));
           }
         } catch (err) {
           console.log("ℹ️ Elemento do CAPTCHA sumiu ou já foi resolvido.");
@@ -368,6 +372,55 @@ export const getHtml = async (request, response) => {
 
         return Array.from(vagasMap.values());
       });
+    } else if (pegarVagas.name === "infojobs") {
+      let URL = pegarVagas.url + encodeURIComponent(keyWord);
+      console.log(`📄 Acessando Infojobs: ${URL}`);
+
+      await page.goto(URL, { waitUntil: "networkidle2", timeout: 45000 });
+      await page.keyboard.press("Escape");
+
+      await page.evaluate(() => {
+        const overlays = document.querySelectorAll(
+          '[role="dialog"], div[class*="modal"], div[class*="overlay"]',
+        );
+        overlays.forEach((el) => el.remove());
+      });
+
+      const maxScrolls = 5;
+      for (let i = 0; i < maxScrolls; i++) {
+        console.log(
+          `⬇️ Rolando Infojobs para carregar mais vagas (${i + 1}/${maxScrolls})...`,
+        );
+
+        await page.evaluate(() =>
+          window.scrollTo(0, document.body.scrollHeight),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
+
+      const pageResult = await page.evaluate(() => {
+        let titleElements = Array.from(
+          document.querySelectorAll("h2.js_vacancyTitle"),
+        );
+
+        return titleElements
+          .map((titleEl) => {
+            const anchor = titleEl.closest("a");
+            const rawTitle = titleEl.textContent || "";
+            const cleanTitle = rawTitle.replace(/\s+/g, " ").trim();
+
+            return {
+              title: cleanTitle,
+              url: anchor ? anchor.href : null,
+            };
+          })
+          .filter((vaga) => vaga.title.length > 2 && vaga.url);
+      });
+
+      console.log(
+        `✨ Total de vagas válidas capturadas no Infojobs: ${pageResult.length}`,
+      );
+      result.push(...pageResult);
     } else {
       let query;
       if (name.toLowerCase() === "glassdoor") {
@@ -528,7 +581,7 @@ export const getHtml = async (request, response) => {
 
       if (tituloTemTermoProibido) {
         console.log(
-          `🚫 Rejeitada pelo Título ou pela modalidade (termo proibido "${termoEncontrado}"): "${vaga.title}`,
+          `🚫 Rejeitada pelo Título (termo proibido "${termoEncontrado}"): "${vaga.title}`,
         );
         continue;
       }
@@ -555,7 +608,7 @@ export const getHtml = async (request, response) => {
             waitUntil: "domcontentloaded",
             timeout: 65000,
           });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, 6000));
           await page.keyboard.press("Escape");
 
           if (pegarVagas.name === "glassdoor") {
@@ -630,8 +683,22 @@ export const getHtml = async (request, response) => {
             overlays.forEach((el) => el.remove());
           });
 
-          const descriptionText = await pageFiltered.evaluate((siteName) => {
+          const pageData = await pageFiltered.evaluate((siteName) => {
             let container;
+            let modalidadeText = "";
+
+            if (siteName === "infojobs") {
+              const modalidadeEl = document.querySelector(
+                "div.text-medium:has(svg.icon-buildings), div:has(> svg.icon-buildings)",
+              );
+              if (modalidadeEl) {
+                const clone = modalidadeEl.cloneNode(true);
+                const svg = clone.querySelector("svg");
+                if (svg) svg.remove();
+                modalidadeText = clone.textContent.trim();
+              }
+            }
+
             switch (siteName) {
               case "indeed":
                 container =
@@ -683,14 +750,30 @@ export const getHtml = async (request, response) => {
                 container = document.querySelector("div.job-information");
                 break;
 
-              default:
+              case "jooble":
                 container = document.querySelector(
                   "div[data-test-name='_jobDescriptionBlock']",
                 );
+                break;
+
+              case "infojobs":
+                container =
+                  document.querySelector("div.js_vacancyDataPanels") ||
+                  document.querySelector('div[class*="vacancy-description"]') ||
+                  document.querySelector("main");
+                break;
+
+              default:
+                break;
             }
 
-            return container ? container.innerText.trim() : "";
+            return {
+              descriptionText: container ? container.innerText.trim() : "",
+              modalidadeText: modalidadeText || "",
+            };
           }, pegarVagas.name);
+
+          const fullTextToFilter = `Modalidade: ${pageData.modalidadeText} Descrição ${pageData.descriptionText}`;
 
           const descTemTermoProibido = termosProibidos.some((termo) => {
             const termoEscapado = escapeRegex(termo);
@@ -699,15 +782,18 @@ export const getHtml = async (request, response) => {
               ? termoEscapado
               : `\\b${termoEscapado}\\b`;
             const regex = new RegExp(pattern, "i");
-            return regex.test(descriptionText);
+            return regex.test(fullTextToFilter);
           });
 
           if (!descTemTermoProibido) {
             vagasComDescricao.push({
               title: vaga.title,
               url: vaga.url,
-              description: descriptionText,
+              description: pageData.descriptionText,
+              modalidade: pageData.modalidadeText || "Não informada",
             });
+          } else {
+            console.log(`🚫 Vaga rejeitada pela descrição: "${vaga.title}"`);
           }
         } catch (e) {
           console.error(
